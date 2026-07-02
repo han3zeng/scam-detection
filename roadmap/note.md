@@ -1,0 +1,2 @@
+- api gateway: security, rate limit, api key, authentication
+- CORS in FastAPI

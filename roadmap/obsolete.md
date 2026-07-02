@@ -1,10 +1,8 @@
+# Obsolete section
+
 ## Steps
 1. Fine-tune pre-trained model [BERT-Base-Chinese](https://huggingface.co/google-bert/bert-base-chinese) with data [line-msg-fact-check-tw](https://huggingface.co/datasets/Cofacts/line-msg-fact-check-tw)
 2. 
-
-
-## Goal
-https://nordvpn.com/scam-text-checker/?srsltid=AfmBOopSHG3rMzrhukA3xY2oHgzxtwsWUoPVkqGpTRLEhBYnJ8WWKdfa
 
 ## Implementation
 
@@ -79,3 +77,4 @@ def scam_checker(message: str):
     - It has larger params, and transformer-based
     - I suppose the capacity exceeding what I need
     - The scam detection only needs encoder part
+

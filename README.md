@@ -1,2 +1,2 @@
-# scam-detection
-scam-detection based on BERT
+# Emotion detection
+Emotion-detection based on BERT
