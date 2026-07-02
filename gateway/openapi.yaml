@@ -1,0 +1,92 @@
+# API Gateway config (must be OpenAPI 2.0 / Swagger — API Gateway does not
+# accept OpenAPI 3). Replace CLOUD_RUN_URL before creating the config:
+#
+#   RUN_URL=$(gcloud run services describe emotion-api --region REGION --format='value(status.url)')
+#   sed "s|CLOUD_RUN_URL|$RUN_URL|g" gateway/openapi.yaml > /tmp/openapi-resolved.yaml
+#
+# See docs/gcp-setup.md for the full setup.
+swagger: "2.0"
+info:
+  title: emotion-api
+  description: Emotion-labeling API for Traditional Chinese text
+  version: "1.0.0"
+schemes:
+  - https
+produces:
+  - application/json
+
+# The gateway authenticates to Cloud Run with the service account passed as
+# --backend-auth-service-account when creating the api-config; Cloud Run itself
+# rejects unauthenticated callers, so the gateway is the only way in.
+x-google-backend:
+  address: CLOUD_RUN_URL
+  path_translation: APPEND_PATH_TO_ADDRESS
+  deadline: 60.0
+
+securityDefinitions:
+  api_key:
+    type: apiKey
+    name: x-api-key
+    in: header
+
+# Rate limiting: 60 prediction requests/minute per consumer. A public demo
+# endpoint running an ML model with no quota is an open invitation to burn
+# GCP credits.
+x-google-management:
+  metrics:
+    - name: emotion-requests
+      displayName: Emotion prediction requests
+      valueType: INT64
+      metricKind: DELTA
+  quota:
+    limits:
+      - name: emotion-requests-per-minute
+        metric: emotion-requests
+        unit: "1/min/{project}"
+        values:
+          STANDARD: 60
+
+paths:
+  /health:
+    get:
+      operationId: health
+      security:
+        - api_key: []
+      responses:
+        "200":
+          description: Service is up
+  /v1/emotion:
+    post:
+      operationId: predictEmotion
+      security:
+        - api_key: []
+      x-google-quota:
+        metricCosts:
+          emotion-requests: 1
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required: [text]
+            properties:
+              text:
+                type: string
+              top_k:
+                type: integer
+      responses:
+        "200":
+          description: Emotion prediction
+        "422":
+          description: Validation error
+        "429":
+          description: Rate limited
+    # CORS preflight passes through unauthenticated (browsers don't send
+    # x-api-key on OPTIONS); FastAPI's CORSMiddleware answers it.
+    options:
+      operationId: corsEmotion
+      security: []
+      responses:
+        "200":
+          description: CORS preflight
