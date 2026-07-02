@@ -5,10 +5,10 @@
 
 
 ## Overview
-Originally, my plane is to make a traditional chinese version of nordvpn scam checker. However, after research, I reckon that the traditional-chinese scam data is not available so I pivot to emotional label service simply for demo.
+Originally, my plan was to make a traditional-chinese version of the NordVPN scam checker. However, after research, I reckon that traditional-chinese scam data is not available, so I pivot to an emotion-labeling service for the demo. This is still a building block toward scam detection: scam messages lean heavily on urgency, fear, and pressure — all tonal signals — so an emotion/tone classifier is a natural first component of a scam-detection pipeline.
 
 So I should have 4 main elements.
-1. Data pipeline 
+1. Data pipeline
 2. Model training and deploy pipeline
 3. Backend-service
 4. Frontend-service
@@ -18,50 +18,33 @@ For now I will focus on 3 and 4 since I decide to use the existing [Chinese-Emot
 
 
 ## Backend-service
-Wrap fastAPI around the [Chinese-Emotion-Small](https://huggingface.co/Johnson8187/Chinese-Emotion-Small) model to provides a emotion-label endpoint service. The service should be a docker container and deploy to google cloud run with a full CI/CD pipeline. Use google API gateway to handle cors and x-api-key verification.
+Wrap FastAPI around the [Chinese-Emotion-Small](https://huggingface.co/Johnson8187/Chinese-Emotion-Small) model to provide an emotion-labeling endpoint service. The service should be a Docker container deployed to Google Cloud Run with a full CI/CD pipeline. Use Google API Gateway to handle API-key verification and quota.
 
 Flow
 ```
 Front end service -> api gateway -> cloud run (back end service)
 ```
 
+### Milestones
+- [ ] **Phase 1 — Local FastAPI service + tests.** Endpoints, validation, error contract, unit tests with mocked model, one integration test with the real model. *Done when: `pytest` passes locally and the service answers `POST /v1/emotion` correctly.*
+- [ ] **Phase 2 — Docker.** Multi-stage image with the model baked in, runs locally. *Done when: `docker run` serves the same requests as Phase 1.*
+- [ ] **Phase 3 — Cloud Run + CI/CD.** GitHub Actions pipeline deploys on push to main, with smoke test and rollback. *Done when: a push to main produces a live, smoke-tested revision.*
+- [ ] **Phase 4 — API Gateway.** Gateway in front with API key, quota, and locked-down Cloud Run ingress. *Done when: requests only succeed through the gateway with a valid key.*
+
 The following content specifies the specs:
 
-### CI/CD Pipeline
-```
-Push to main
-  → run lint
-  → run unit tests
-  → build Docker image
-  → push image to Google Artifact Registry
-  → deploy image to Cloud Run
-  → smoke test /health
-```
-
-### Docker image strategy
-- docker download the model and built it into image with FastAPI service
-
-
-
-### Google API Gateway
-
-#### CORS
-- The back-end service and front-end service will be at different domain, so please enable the CORS of back-end service
-
-#### x-API-key
-
-### Endpoint
+### Endpoints
 2 basic endpoints
 ```
-GET /health
-GET /emotion
+GET  /health          (liveness: process is up)
+GET  /ready           (readiness: model is loaded and can serve)
+POST /v1/emotion
 ```
-- health is simply to check if the service is running
-- emotion endpoint is for frontend to get data response
+- `/health` simply checks the service is running (liveness).
+- `/ready` returns 200 only once the model is loaded into memory; wire this to Cloud Run's startup probe. The model is loaded **eagerly at startup** (not lazily on first request) so cold instances never serve a slow first prediction.
+- `/v1/emotion` is a **POST** (a GET with a JSON body is nonstandard and many clients/proxies drop the body). The path is versioned (`/v1/`) so the contract can evolve without breaking clients.
 
-### Features
-
-#### Emotion End-point Data Format
+### Emotion Endpoint Data Format
 Request Payload
 
 ```json
@@ -72,7 +55,6 @@ Request Payload
 ```
 
 Response
-
 
 ```json
 {
@@ -87,28 +69,108 @@ Response
     { "label": "疑問語調", "label_en": "questioning", "score": 0.11 },
     { "label": "平淡語氣", "label_en": "neutral", "score": 0.04 }
   ],
-  "model": "Johnson8187/Chinese-Emotion-Small"
+  "model": "Johnson8187/Chinese-Emotion-Small",
+  "model_revision": "<pinned HF commit hash>"
 }
 ```
 
+Note: `prediction` intentionally duplicates `top_k[0]` as a convenience field so simple clients don't need to index into the array.
 
-#### Input Validation
+### Input Validation
 ```python
 text: str
-max length: maybe 512 Chinese characters
-empty text: reject
-top_k: 1-8
+  - empty / whitespace-only: reject (422)
+  - max length: 512 characters, enforced in Pydantic
+top_k: int, 1-8 (default 3)
+```
+The model's real limit is 512 **tokens**, not characters, and tokens ≠ characters. Policy: validate the 512-character cap in Pydantic (predictable contract for clients), then truncate at the tokenizer to the model's 512-token limit as a safety net. Truncation is silent and documented here — the API never rejects on token count.
+
+### Error Response Contract
+All errors return a consistent JSON body:
+
+```json
+{
+  "error": {
+    "code": "TEXT_TOO_LONG",
+    "message": "text exceeds 512 characters"
+  }
+}
 ```
 
-## Supporting Service (Optional)
+Enumerated cases:
+
+| Status | Code | When |
+|---|---|---|
+| 422 | `EMPTY_TEXT` / `TEXT_TOO_LONG` / `INVALID_TOP_K` | validation failure |
+| 401 / 403 | `UNAUTHORIZED` | missing or invalid API key (returned by gateway) |
+| 429 | `RATE_LIMITED` | quota exceeded (returned by gateway) |
+| 500 | `INTERNAL` | unexpected failure; no internal details leaked |
+
+### Docker Image Strategy
+- Download the model at build time and bake it into the image (avoids cold-start downloads).
+- Pin the model to a specific HuggingFace **revision/commit hash**, not just the repo name — otherwise the model author can silently change what a "reproducible" image contains.
+- Multi-stage build; final image contains only runtime deps.
+- **CPU-only PyTorch wheel** (cuts the image from ~6GB to ~1.5GB, which directly improves Cloud Run cold starts).
+- Dependencies locked with `uv` lockfile; pinned base image.
+- Run as non-root user; include a `.dockerignore`.
+
+### Cloud Run Configuration
+- Memory: 2GB (model + tokenizer in memory).
+- Concurrency: start low (e.g. 4–8) and tune; CPU-bound inference doesn't benefit from high concurrency.
+- `min-instances`: 0 for cost (accept cold starts) — revisit to 1 if the demo needs snappy first requests.
+- **`max-instances`: small hard cap (e.g. 3) as a cost guardrail.**
+- Startup probe → `GET /ready`; liveness probe → `GET /health`.
+- **Ingress/auth: Cloud Run requires authentication (no unauthenticated public access).** The gateway invokes it with a dedicated service account holding `roles/run.invoker`. This closes the bypass where someone discovers the `run.app` URL and skips the gateway and API key entirely.
+
+### Google API Gateway
+
+#### x-API-key
+- Keys created via GCP API keys, **restricted to this gateway's managed service** so a leaked key can't call other GCP APIs.
+- **Quota / rate limit configured on the gateway** (e.g. 60 requests/min per key). A public demo endpoint running an ML model with no rate limit is an open invitation to burn GCP credits.
+
+#### CORS
+- The back-end and front-end are on different domains, so CORS is required.
+- ⚠️ API Gateway's CORS support is limited/awkward in practice. Plan: **spike this first**; the likely outcome is handling CORS in FastAPI (`CORSMiddleware`) with the gateway passing `OPTIONS` through, rather than relying on the gateway.
+
+### CI/CD Pipeline
+Runs on **GitHub Actions**.
+
+Pull request pipeline (no deploy):
+```
+PR opened/updated
+  → run lint
+  → run unit tests
+```
+
+Main pipeline:
+```
+Push to main
+  → run lint
+  → run unit tests
+  → build Docker image (tagged with git SHA — never :latest)
+  → push image to Google Artifact Registry
+  → deploy to Cloud Run with --no-traffic
+  → smoke test the new revision's /health and /ready
+  → shift traffic to the new revision
+```
+- GCP auth via **Workload Identity Federation** — no downloaded service-account key JSON in GitHub secrets.
+- Rollback: if the smoke test fails, traffic never shifted, so the previous revision keeps serving; delete/ignore the bad revision. Manual rollback is one command (route traffic back to the previous revision).
+
+### Testing Strategy
+- **Unit tests (fast, run on every PR):** input validation, response schema, error paths, truncation policy — with the model **mocked**.
+- **Integration test (one, slower):** load the real model and assert an end-to-end prediction on a known input. Run on main pipeline (or locally) so PR CI stays fast.
+- **Smoke test (deploy-time):** hit `/health` and `/ready` on the new revision before traffic shifts.
+
+### Config Management
+All config via environment variables using **Pydantic Settings**; secrets in **Secret Manager**; nothing hardcoded.
+
+## Supporting Services
 ### Cloud Logging
-- request logs
-- error logs
-- latency monitoring
-
-
+Not optional — structured logging is table stakes.
+- Structured JSON logs with a request ID on every entry.
+- Request logs, error logs, latency monitoring.
+- **Privacy decision: request bodies (user text) are NOT logged.** The input text is potentially sensitive (eventually scam messages, personal conversations); log only metadata (text length, top_k, latency, status).
 
 ## References
 - [Scam Report - Ministry of Digital Affairs](https://fraudbuster.digiat.org.tw/accessibility/index)
-- BERT > [XMLRoBERTa](https://huggingface.co/FacebookAI/xlm-roberta-large) > [xlm-roberta-large-xnli](https://huggingface.co/joeddav/xlm-roberta-large-xnli) > [Chinese-Emotion-Small](https://huggingface.co/Johnson8187/Chinese-Emotion-Small)
-- https://chatgpt.com/c/6a45fb4c-799c-83e8-b36e-b280131c5bf2
+- Model selection path: BERT > [XLM-RoBERTa](https://huggingface.co/FacebookAI/xlm-roberta-large) > [xlm-roberta-large-xnli](https://huggingface.co/joeddav/xlm-roberta-large-xnli) > [Chinese-Emotion-Small](https://huggingface.co/Johnson8187/Chinese-Emotion-Small) — narrowed by Chinese-language support and model size suitable for CPU serving on Cloud Run.
