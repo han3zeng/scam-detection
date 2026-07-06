@@ -26,7 +26,7 @@ Front end service -> api gateway -> cloud run (back end service)
 ```
 
 ### Milestones
-- [ ] **Phase 1 — Local FastAPI service + tests.** Endpoints, validation, error contract, unit tests with mocked model, one integration test with the real model. *Done when: `pytest` passes locally and the service answers `POST /v1/emotion` correctly.*
+- [x] **Phase 1 — Local FastAPI service + tests.** Endpoints, validation, error contract, unit tests with mocked model, one integration test with the real model. *Done when: `pytest` passes locally and the service answers `POST /v1/emotion` correctly.*
 - [ ] **Phase 2 — Docker.** Multi-stage image with the model baked in, runs locally. *Done when: `docker run` serves the same requests as Phase 1.*
 - [ ] **Phase 3 — Cloud Run + CI/CD.** GitHub Actions pipeline deploys on push to main, with smoke test and rollback. *Done when: a push to main produces a live, smoke-tested revision.*
 - [ ] **Phase 4 — API Gateway.** Gateway in front with API key, quota, and locked-down Cloud Run ingress. *Done when: requests only succeed through the gateway with a valid key.*
@@ -109,7 +109,6 @@ Enumerated cases:
 | 401 / 403 | `UNAUTHORIZED` | missing or invalid API key (returned by gateway) |
 | 429 | `RATE_LIMITED` | quota exceeded (returned by gateway) |
 | 500 | `INTERNAL` | unexpected failure; no internal details leaked |
-
 
 ### Docker Image Strategy
 - Download the model at build time and bake it into the image (avoids cold-start downloads).

@@ -1,0 +1,114 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+# Never let two deploys interleave.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION }}
+  SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+  AR_REPO: ${{ vars.ARTIFACT_REGISTRY_REPO }}
+  RUNTIME_SA: ${{ vars.GCP_RUNTIME_SA }}
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Unit tests (model mocked)
+        run: uv run pytest
+
+  deploy:
+    needs: lint-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for Workload Identity Federation
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (Workload Identity Federation, no key files)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+
+      - name: Build image (tagged by git SHA, never :latest)
+        run: |
+          IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/$SERVICE:${{ github.sha }}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build -t "$IMAGE" .
+
+      - name: Push image
+        run: docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run (no traffic yet)
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE" \
+            --region "$REGION" \
+            --platform managed \
+            --no-allow-unauthenticated \
+            --service-account "$RUNTIME_SA" \
+            --memory 2Gi \
+            --cpu 2 \
+            --concurrency 8 \
+            --min-instances 0 \
+            --max-instances 3 \
+            --timeout 60 \
+            --port 8080 \
+            --startup-probe "httpGet.path=/ready,httpGet.port=8080,initialDelaySeconds=10,periodSeconds=10,failureThreshold=18,timeoutSeconds=5" \
+            --no-traffic \
+            --tag candidate
+
+      - name: Smoke test the candidate revision
+        run: |
+          CANDIDATE_URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format=json \
+            | jq -r '.status.traffic[] | select(.tag == "candidate") | .url')
+          echo "candidate URL: $CANDIDATE_URL"
+          TOKEN=$(gcloud auth print-identity-token)
+
+          # /ready cold-starts the instance and loads the model; retry while it warms up.
+          for attempt in $(seq 1 12); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $TOKEN" "$CANDIDATE_URL/ready" || true)
+            [ "$CODE" = "200" ] && break
+            echo "attempt $attempt: /ready returned $CODE, retrying in 10s"
+            sleep 10
+          done
+          [ "$CODE" = "200" ] || { echo "smoke test failed: /ready never became 200"; exit 1; }
+
+          curl -sf -H "Authorization: Bearer $TOKEN" "$CANDIDATE_URL/health" > /dev/null
+
+          curl -sf -X POST "$CANDIDATE_URL/v1/emotion" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"text": "你最近過得好嗎？"}' \
+            | jq -e '.prediction.label' > /dev/null
+
+      # Traffic only shifts if the smoke test passed. On failure the previous
+      # revision keeps serving 100% — rollback is "do nothing".
+      - name: Shift traffic to the new revision
+        run: gcloud run services update-traffic "$SERVICE" --region "$REGION" --to-latest
