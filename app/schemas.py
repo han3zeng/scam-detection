@@ -1,3 +1,5 @@
+# FastAPI uses standard Python type hints combined with Pydantic to automatically validate incoming data types and values
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticCustomError
 
