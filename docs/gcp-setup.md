@@ -10,14 +10,14 @@ Conventions used below — replace with your values everywhere:
 | `PROJECT_ID` | your GCP project id | `emotion-demo-123456` |
 | `PROJECT_NUMBER` | numeric project number (`gcloud projects describe PROJECT_ID --format='value(projectNumber)'`) | `123456789012` |
 | `REGION` | region for everything | `asia-east1` (Taiwan) |
-| `GITHUB_REPO` | GitHub `owner/repo` | `han3zeng/scam-detection` |
+| `GITHUB_REPO` | GitHub `owner/repo` | `han3zeng/emotion-detection` |
 
 Set them as shell variables so you can paste the commands as-is:
 
 ```bash
 export PROJECT_ID="your-project-id"
 export REGION="asia-east1"
-export GITHUB_REPO="han3zeng/scam-detection"
+export GITHUB_REPO="han3zeng/emotion-detection"
 export PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
 gcloud config set project "$PROJECT_ID"
 ```
@@ -25,6 +25,19 @@ gcloud config set project "$PROJECT_ID"
 ---
 
 ## 1. Enable APIs
+- run.googleapis.com: cloud run
+- artifactregistry.googleapis.com: store docker image
+- API Gateway
+  - apigateway.googleapis.com
+  - servicemanagement.googleapis.com
+  - servicecontrol.googleapis.com
+- apikeys.googleapis.com
+- iamcredentials.googleapis.com 
+  - Generate temporary credentials and tokens.
+  - Common in secure CI/CD pipelines.
+- sts.googleapis.com
+  - Security Token Service
+  - GitHub Actions OIDC
 
 ```bash
 gcloud services enable \
@@ -53,16 +66,16 @@ Three accounts, one per role — this separation is the production pattern:
 
 | Account | Purpose | Roles |
 |---|---|---|
-| `emotion-runtime` | identity the Cloud Run service *runs as* | (none needed for now) |
+| `emotion-be-runtime` | identity the Cloud Run service *runs as* | (none needed for now) |
 | `emotion-gateway` | identity API Gateway *calls Cloud Run with* | `run.invoker` on the service |
 | `github-deployer` | identity GitHub Actions *deploys with* | `run.admin`, `artifactregistry.writer`, `serviceAccountUser`, `run.invoker` |
 
 ```bash
-gcloud iam service-accounts create emotion-runtime  --display-name="Cloud Run runtime"
+gcloud iam service-accounts create emotion-be-runtime  --display-name="Cloud Run backend runtime"
 gcloud iam service-accounts create emotion-gateway  --display-name="API Gateway backend auth"
 gcloud iam service-accounts create github-deployer  --display-name="GitHub Actions deployer"
 
-export RUNTIME_SA="emotion-runtime@$PROJECT_ID.iam.gserviceaccount.com"
+export BE_RUNTIME_SA="emotion-be-runtime@$PROJECT_ID.iam.gserviceaccount.com"
 export GATEWAY_SA="emotion-gateway@$PROJECT_ID.iam.gserviceaccount.com"
 export DEPLOYER_SA="github-deployer@$PROJECT_ID.iam.gserviceaccount.com"
 ```
@@ -83,7 +96,7 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:$DEPLOYER_SA" --role="roles/run.invoker"
 
 # allowed to deploy *as* the runtime SA
-gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
+gcloud iam service-accounts add-iam-policy-binding "$BE_RUNTIME_SA" \
   --member="serviceAccount:$DEPLOYER_SA" --role="roles/iam.serviceAccountUser"
 ```
 
@@ -92,10 +105,19 @@ gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
 This lets GitHub Actions authenticate via OIDC — no downloaded service-account
 key JSON sitting in GitHub secrets.
 
+**Side Notes**
+
+**OIDC**
+Traditional identity verification causes The Password Proliferation Crisis, i.e., user may have different accounts and passwords for different services. The OAuth tackles the application layer problem through granting access permission to different apps from single account. On the other hand, OIDC enables universal Single Sign-On (SSO), creates a centralized identity Provider like Oka. 
+
+**Workload identity pools**
+Workload identity pools allow non-Google Cloud applications and services (like those running in AWS, Azure, or GitHub) to securely access Google Cloud resources. They eliminate the need to manually create, rotate, and secure long-lived service account keys by using Workload Identity Federation to grant short-lived, temporary access via IAM.
 ```bash
+# Creates a container (the pool) to manage external identities
 gcloud iam workload-identity-pools create github-pool \
   --location=global --display-name="GitHub Actions"
 
+# Creates a "provider" inside the pool `github-pool`. This tells Google Cloud to trust GitHub's authentication system
 gcloud iam workload-identity-pools providers create-oidc github-provider \
   --location=global \
   --workload-identity-pool=github-pool \
@@ -109,9 +131,12 @@ The `attribute-condition` is the security boundary: only workflows from *your*
 repo can exchange tokens. Now allow that identity to impersonate the deployer:
 
 ```bash
+# This command grants GitHub repository $GITHUB_REPO permission to impersonate Google Cloud Service Account $DEPLOYER_SA.
 gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" \
   --role="roles/iam.workloadIdentityUser" \
   --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool/attribute.repository/$GITHUB_REPO"
+
+# echo: projects/737991661671/locations/global/workloadIdentityPools/github-pool/providers/github-provider
 ```
 
 Note the full provider resource name — you'll put it in GitHub:
@@ -127,17 +152,32 @@ very first deployment — so create the service once by hand. This also builds
 the image locally (~10–20 min the first time; the model download is ~1.1GB):
 
 ```bash
+# Configures the local Docker client to use Google Cloud Artifact Registry for image pushing and pulling 
 gcloud auth configure-docker "$REGION-docker.pkg.dev"
 
+# Creates image at current folder `.` tag it with strict cloud address and an explicit version label named :bootstrap.
 docker build -t "$REGION-docker.pkg.dev/$PROJECT_ID/emotion-detection/emotion-api:bootstrap" .
+
+# Build with emulating amd64 chip 
+docker buildx build --platform linux/amd64 -t "$REGION-docker.pkg.dev/$PROJECT_ID/emotion-detection/emotion-api:bootstrap" .          
+
+# Push to google cloud artifact registry
 docker push "$REGION-docker.pkg.dev/$PROJECT_ID/emotion-detection/emotion-api:bootstrap"
 
+# Instructs Google Cloud to deploy or update a service named emotion-api.
+# --platform managed: Tells Google to handle all server maintenance, scaling, and infrastructure configurations automatically.
+# --no-allow-unauthenticated: Locks the endpoint down so only verified clients with proper IAM credentials can call it.
+# --service-account: Grants your running application specific cloud identities and permissions via an IAM service account variable.
+# --concurrency 8:  Limits each single container instance to handling a maximum of 8 simultaneous requests at once.
+# --timeout 60 --port 8080: Kills any request taking longer than 60 seconds, and routes incoming web traffic into port 8080 inside your container.
+# --startup-probe: Tells Cloud Run how to verify your app is fully loaded before routing users to it.
+## The breakdown: It waits 10 seconds (initialDelaySeconds), then pings your /ready endpoint every 10 seconds (periodSeconds). It gives the app up to 3 minutes to pass (18 failures × 10 seconds) before declaring the deployment a failure.
 gcloud run deploy emotion-api \
   --image "$REGION-docker.pkg.dev/$PROJECT_ID/emotion-detection/emotion-api:bootstrap" \
   --region "$REGION" \
   --platform managed \
   --no-allow-unauthenticated \
-  --service-account "$RUNTIME_SA" \
+  --service-account "$BE_RUNTIME_SA" \
   --memory 2Gi --cpu 2 \
   --concurrency 8 \
   --min-instances 0 --max-instances 3 \
@@ -163,6 +203,7 @@ curl -s -o /dev/null -w '%{http_code}\n' "$RUN_URL/health"
 And that it works with credentials (should print JSON):
 
 ```bash
+# Use the identity of the account showed by `gcloud config get-value account`
 curl -s -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$RUN_URL/health"
 ```
 
