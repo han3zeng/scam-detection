@@ -25,7 +25,6 @@ gcloud config set project "$PROJECT_ID"
 ---
 
 ## 1. Enable APIs
-
 ```bash
 gcloud services enable \
   run.googleapis.com \

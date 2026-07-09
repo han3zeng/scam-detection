@@ -12,8 +12,11 @@ ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never
 
-# Set the working directory to /build
-WORKDIR /build
+# Set the working directory to /srv — must be the SAME path as the runtime
+# stage's WORKDIR: the venv's scripts (uvicorn, etc.) hard-code the absolute
+# path of the venv's python in their shebang line at install time, so the venv
+# must live at the same path in both stages or those scripts break.
+WORKDIR /srv
 
 # Deps first so this layer is cached across code-only changes.
 # Copy dependency files first.
@@ -43,7 +46,8 @@ RUN useradd --create-home --uid 1000 appuser
 WORKDIR /srv
 
 # Copy the installed virtual environment from the builder stage to service stage
-COPY --from=builder /build/.venv /srv/.venv
+# (same /srv/.venv path in both stages, so the scripts' shebangs stay valid)
+COPY --from=builder /srv/.venv /srv/.venv
 # Copy the downloaded Hugging Face model into the final image.
 COPY --from=builder /model /model
 # Copy FastAPI application code into the image.
