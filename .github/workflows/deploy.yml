@@ -86,17 +86,21 @@ jobs:
 
       - name: Smoke test the candidate revision
         run: |
-          CANDIDATE_URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format=json \
-            | jq -r '.status.traffic[] | select(.tag == "candidate") | .url')
+          DESCRIBE=$(gcloud run services describe "$SERVICE" --region "$REGION" --format=json)
+          SERVICE_URL=$(echo "$DESCRIBE" | jq -r '.status.url')
+          CANDIDATE_URL=$(echo "$DESCRIBE" | jq -r '.status.traffic[] | select(.tag == "candidate") | .url')
           echo "candidate URL: $CANDIDATE_URL"
           # WIF credentials can't mint ID tokens directly; impersonate the
           # deployer SA instead (requires roles/iam.serviceAccountTokenCreator
           # granted to the deployer SA on itself — see docs/gcp-setup.md).
-          # --include-email is required: without it the token carries no email
-          # claim and Cloud Run rejects it with 401.
+          # --include-email is required: without it the token has no email
+          # claim and Cloud Run 401s. The audience must be the service's ROOT
+          # URL, not the candidate tag URL — Cloud Run rejects tag URLs as
+          # token audiences (401), while the root URL is valid for every URL
+          # of the service including the tag URL we call below.
           TOKEN=$(gcloud auth print-identity-token \
             --impersonate-service-account="$DEPLOYER_SA" \
-            --audiences="$CANDIDATE_URL" \
+            --audiences="$SERVICE_URL" \
             --include-email)
 
           # /ready cold-starts the instance and loads the model; retry while it warms up.
