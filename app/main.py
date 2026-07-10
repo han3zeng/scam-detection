@@ -57,7 +57,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health")
     def health() -> dict:
         """Liveness: the process is up."""
-        return {"status": "ok"}
+        return {"status": "ok", "version": "bootstrap"}
 
     @app.get("/ready")
     def ready(request: Request) -> dict:
