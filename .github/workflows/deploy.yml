@@ -92,9 +92,12 @@ jobs:
           # WIF credentials can't mint ID tokens directly; impersonate the
           # deployer SA instead (requires roles/iam.serviceAccountTokenCreator
           # granted to the deployer SA on itself — see docs/gcp-setup.md).
+          # --include-email is required: without it the token carries no email
+          # claim and Cloud Run rejects it with 401.
           TOKEN=$(gcloud auth print-identity-token \
             --impersonate-service-account="$DEPLOYER_SA" \
-            --audiences="$CANDIDATE_URL")
+            --audiences="$CANDIDATE_URL" \
+            --include-email)
 
           # /ready cold-starts the instance and loads the model; retry while it warms up.
           for attempt in $(seq 1 12); do
