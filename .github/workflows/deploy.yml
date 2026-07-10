@@ -15,6 +15,7 @@ env:
   SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
   AR_REPO: ${{ vars.ARTIFACT_REGISTRY_REPO }}
   RUNTIME_SA: ${{ vars.GCP_RUNTIME_SA }}
+  DEPLOYER_SA: ${{ vars.GCP_DEPLOYER_SA }}
 
 jobs:
   lint-test:
@@ -88,7 +89,12 @@ jobs:
           CANDIDATE_URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format=json \
             | jq -r '.status.traffic[] | select(.tag == "candidate") | .url')
           echo "candidate URL: $CANDIDATE_URL"
-          TOKEN=$(gcloud auth print-identity-token)
+          # WIF credentials can't mint ID tokens directly; impersonate the
+          # deployer SA instead (requires roles/iam.serviceAccountTokenCreator
+          # granted to the deployer SA on itself — see docs/gcp-setup.md).
+          TOKEN=$(gcloud auth print-identity-token \
+            --impersonate-service-account="$DEPLOYER_SA" \
+            --audiences="$CANDIDATE_URL")
 
           # /ready cold-starts the instance and loads the model; retry while it warms up.
           for attempt in $(seq 1 12); do

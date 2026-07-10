@@ -98,6 +98,14 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 # allowed to deploy *as* the runtime SA
 gcloud iam service-accounts add-iam-policy-binding "$BE_RUNTIME_SA" \
   --member="serviceAccount:$DEPLOYER_SA" --role="roles/iam.serviceAccountUser"
+
+# allowed to mint ID tokens as itself. Required by the CI smoke test: WIF
+# credentials can produce access tokens but not ID tokens, so the workflow
+# calls the private Cloud Run URL with
+#   gcloud auth print-identity-token --impersonate-service-account=$DEPLOYER_SA
+# and that impersonation needs this grant (yes, the SA impersonating itself).
+gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" \
+  --member="serviceAccount:$DEPLOYER_SA" --role="roles/iam.serviceAccountTokenCreator"
 ```
 
 ## 4. Workload Identity Federation (GitHub → GCP without key files)
@@ -336,15 +344,12 @@ gcloud run services update-traffic emotion-api --region "$REGION" \
 
 ## Troubleshooting
 
-- **`gcloud auth print-identity-token` fails in CI** — some gcloud versions
-  can't mint ID tokens from WIF credentials directly. Fix: grant the deployer
-  permission to impersonate itself and use the impersonation path:
-  ```bash
-  gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" \
-    --member="serviceAccount:$DEPLOYER_SA" --role="roles/iam.serviceAccountTokenCreator"
-  ```
-  then in the workflow use
-  `gcloud auth print-identity-token --impersonate-service-account="$DEPLOYER_SA" --audiences="$CANDIDATE_URL"`.
+- **`gcloud auth print-identity-token` fails in CI with "No identity token can
+  be obtained from the current credentials"** — WIF credentials can't mint ID
+  tokens directly; the smoke test must impersonate the deployer SA (the
+  workflow already does). Make sure you granted
+  `roles/iam.serviceAccountTokenCreator` to the deployer SA on itself
+  (section 3).
 - **First CI deploy fails with a `--no-traffic` error** — you skipped step 5;
   the very first deployment of a service must take traffic.
 - **Gateway returns 404 for a path that works on Cloud Run** — only paths
