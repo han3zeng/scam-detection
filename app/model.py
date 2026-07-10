@@ -35,10 +35,10 @@ class EmotionClassifier:
 
     def load(self) -> None:
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
-        
+
         # In Dockerfile, then we should have the downloaded file -> nonone model_dir.
 
-        # In local env, then we only have model name, AutoModelForSequenceClassification.from_pretrained load model from hugging face directly.  
+        # In local env, then we only have model name, AutoModelForSequenceClassification.from_pretrained load model from hugging face directly.
         source = self._model_dir or self._model_name
         # A local dir is already a snapshot of the pinned revision.
         kwargs = {} if self._model_dir else {"revision": self._revision}

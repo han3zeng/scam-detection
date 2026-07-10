@@ -45,6 +45,7 @@ def _map_validation_error(exc: RequestValidationError) -> tuple[str, str]:
         return "INVALID_TOP_K", message
     return "VALIDATION_ERROR", message
 
+
 # Add custom error handler: https://fastapi.tiangolo.com/tutorial/handling-errors/#install-custom-exception-handlers
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)

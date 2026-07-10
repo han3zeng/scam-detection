@@ -1,14 +1,17 @@
 import json
+
 # https://docs.python.org/3/library/logging.html#logging-levels
 import logging
 import time
 import uuid
+
 # FastAPI/Starlette handles many requests concurrently.
 # We want to constrain limited-scope global value within each request.
 # The instance is like a hidden key dictionary and the instance itself is the key
 from contextvars import ContextVar
 
 from starlette.middleware.base import BaseHTTPMiddleware
+
 # Typing
 from starlette.requests import Request
 from starlette.responses import Response
