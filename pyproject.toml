@@ -11,6 +11,9 @@ dependencies = [
     "transformers>=4.48",
     "torch>=2.6",
     "sentencepiece>=0.2",
+    "anthropic>=0.40",
+    "google-cloud-firestore>=2.21",
+    "google-genai>=1.0",
 ]
 
 [dependency-groups]

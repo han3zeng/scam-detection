@@ -30,6 +30,7 @@ Front end service -> api gateway -> cloud run (back end service)
 - [ ] **Phase 2 — Docker.** Multi-stage image with the model baked in, runs locally. *Done when: `docker run` serves the same requests as Phase 1.*
 - [ ] **Phase 3 — Cloud Run + CI/CD.** GitHub Actions pipeline deploys on push to main, with smoke test and rollback. *Done when: a push to main produces a live, smoke-tested revision.*
 - [ ] **Phase 4 — API Gateway.** Gateway in front with API key, quota, and locked-down Cloud Run ingress. *Done when: requests only succeed through the gateway with a valid key.*
+- [ ] **Phase 5 — RAG emotion explanation.** `/v1/emotion/explain`: retrieve similar labeled sentences from Firestore vector search and have Claude generate a grounded explanation of the detected tone. *Done when: the endpoint is live behind the gateway with its own (lower) quota.*
 
 The following content specifies the specs:
 
@@ -89,6 +90,65 @@ top_k: int, 1-8 (default 3)
 ```
 The model's real limit is 512 **tokens**, not characters, and tokens ≠ characters. Policy: validate the 512-character cap in Pydantic (predictable contract for clients), then truncate at the tokenizer to the model's 512-token limit as a safety net. Truncation is silent and documented here — the API never rejects on token count.
 
+### RAG Explanation Endpoint (`/v1/emotion/explain`)
+
+Retrieval-augmented explanation of the classifier's verdict. Flow:
+
+```
+text → classifier (Chinese-Emotion-Small)
+     → query embedding (Vertex AI gemini-embedding-001, 768 dims, L2-normalized)
+     → Firestore vector search (KNN over labeled example sentences)
+     → Claude (claude-haiku-4-5, Anthropic API)
+     → grounded Traditional Chinese explanation citing linguistic cues + similar examples
+```
+
+- **Corpus**: [Johnson8187/Chinese_Multi-Emotion_Dialogue_Dataset](https://huggingface.co/datasets/Johnson8187/Chinese_Multi-Emotion_Dialogue_Dataset)
+  (MIT, same author as the model; ~4.2k sentences using exactly the model's
+  8-label taxonomy), ingested once via `scripts/ingest_corpus.py`.
+- **Degradation contract**: the classification is always returned. If retrieval
+  or the LLM fails, the response carries `similar_examples: []` /
+  `explanation: null` plus a `warnings` array instead of a 5xx.
+- **Cost guardrail**: separate gateway quota (20 req/min vs 60 for `/v1/emotion`)
+  since each call spends real money (~$0.002); the deploy smoke test deliberately
+  does not hit this endpoint.
+- **Privacy**: request text is sent to Vertex AI and the Anthropic API at request
+  time; it is still never written to logs.
+
+Request payload:
+
+```json
+{
+  "text": "你怎麼可以這樣對我！",
+  "top_k": 3,
+  "examples_k": 4
+}
+```
+
+Response:
+
+```json
+{
+  "text": "你怎麼可以這樣對我！",
+  "prediction": { "label": "憤怒語調", "label_en": "angry", "score": 0.93 },
+  "top_k": [ { "label": "憤怒語調", "label_en": "angry", "score": 0.93 } ],
+  "similar_examples": [
+    { "text": "你憑什麼這樣說！", "label": "憤怒語調", "label_en": "angry", "similarity": 0.87 }
+  ],
+  "explanation": "此句以質問句式「怎麼可以」直接指責對方，並以感嘆號收尾…（引用 [1]）",
+  "model": "Johnson8187/Chinese-Emotion-Small",
+  "model_revision": "<pinned HF commit hash>",
+  "explain_model": "claude-haiku-4-5",
+  "warnings": []
+}
+```
+
+Warning codes (degraded-but-200 responses):
+
+| Code | Meaning |
+|---|---|
+| `RETRIEVAL_UNAVAILABLE` | embedding or Firestore vector search failed; `similar_examples` is empty |
+| `EXPLANATION_UNAVAILABLE` | the Anthropic call failed; `explanation` is null |
+
 ### Error Response Contract
 All errors return a consistent JSON body:
 
@@ -109,6 +169,7 @@ Enumerated cases:
 | 401 / 403 | `UNAUTHORIZED` | missing or invalid API key (returned by gateway) |
 | 429 | `RATE_LIMITED` | quota exceeded (returned by gateway) |
 | 500 | `INTERNAL` | unexpected failure; no internal details leaked |
+| 503 | `MODEL_NOT_READY` / `EXPLAIN_DISABLED` | model not loaded yet / explain feature not enabled |
 
 ### Docker Image Strategy
 - Download the model at build time and bake it into the image (avoids cold-start downloads).

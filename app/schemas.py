@@ -38,6 +38,47 @@ class EmotionResponse(BaseModel):
     model_revision: str
 
 
+class ExplainRequest(BaseModel):
+    text: str = Field(..., max_length=MAX_TEXT_CHARS)
+    top_k: int = Field(3, ge=1, le=8)
+    # How many similar labeled examples to retrieve for grounding.
+    examples_k: int = Field(4, ge=1, le=8)
+
+    @field_validator("text")
+    @classmethod
+    def text_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise PydanticCustomError("empty_text", "text must not be empty or whitespace-only")
+        return value
+
+
+class SimilarExample(BaseModel):
+    text: str
+    label: str
+    label_en: str
+    similarity: float
+
+
+class WarningDetail(BaseModel):
+    code: str
+    message: str
+
+
+class ExplainResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    text: str
+    prediction: LabelScore
+    top_k: list[LabelScore]
+    similar_examples: list[SimilarExample]
+    # None when explanation generation was degraded — see warnings.
+    explanation: str | None
+    model: str
+    model_revision: str
+    explain_model: str
+    warnings: list[WarningDetail] = []
+
+
 class ErrorDetail(BaseModel):
     code: str
     message: str

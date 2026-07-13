@@ -23,6 +23,25 @@ class Settings(BaseSettings):
     cors_allow_origins: str = ""
     log_level: str = "INFO"
 
+    # --- RAG explanation feature (/v1/emotion/explain) ---
+    # Off by default: requires Firestore + Vertex AI infra and ANTHROPIC_API_KEY.
+    # ANTHROPIC_API_KEY is deliberately NOT a Settings field — the anthropic SDK
+    # reads it from the environment, which keeps the secret out of repr()/logs.
+    explain_enabled: bool = False
+    gcp_project: str = ""
+    vertex_location: str = "us-central1"
+    embedding_model: str = "gemini-embedding-001"
+    # 768 fits Firestore's 2048-dim vector-index cap (the model's native 3072
+    # does not); truncated MRL vectors must be re-normalized after embedding.
+    embedding_dimensions: int = 768
+    firestore_database: str = "(default)"
+    examples_collection: str = "emotion_examples"
+    retrieval_top_k: int = 4
+    explain_model: str = "claude-haiku-4-5"
+    explain_max_tokens: int = 512
+    anthropic_timeout_seconds: float = 15.0
+    anthropic_max_retries: int = 1
+
     # @property let you write settings.cors_origins instead of settings.cors_origins()
     @property
     def cors_origins(self) -> list[str]:

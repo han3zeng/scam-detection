@@ -362,6 +362,124 @@ gcloud run services update-traffic emotion-api --region "$REGION" \
 - The gateway quota (60 req/min per key) caps sustained abuse through the
   front door.
 
+## 11. RAG explanation feature (`/v1/emotion/explain`)
+
+The explain endpoint adds three external dependencies: **Firestore** (vector
+search over labeled example sentences), **Vertex AI** (`gemini-embedding-001`
+embeddings), and the **Anthropic API** (`claude-haiku-4-5` generates the
+explanation). Everything below is one-time setup; the feature is toggled with
+`APP_EXPLAIN_ENABLED` (the deploy pipeline sets it).
+
+### 11.1 Enable APIs
+
+```bash
+gcloud services enable \
+  firestore.googleapis.com \
+  aiplatform.googleapis.com \
+  secretmanager.googleapis.com
+```
+
+### 11.2 Firestore database + vector index
+
+```bash
+# Skip if the project already has a Firestore database.
+gcloud firestore databases create --location="$REGION" --type=firestore-native
+
+# KNN vector index — required before find_nearest() queries work.
+# dimension must match APP_EMBEDDING_DIMENSIONS (768; Firestore caps vector
+# indexes at 2048 dims, which is why we don't use the model's native 3072).
+gcloud firestore indexes composite create \
+  --collection-group=emotion_examples \
+  --query-scope=COLLECTION \
+  --field-config=field-path=embedding,vector-config='{"dimension":"768","flat":"{}"}' \
+  --database="(default)"
+```
+
+### 11.3 Runtime service-account permissions
+
+The Cloud Run runtime SA (`emotion-be-runtime`) now needs to read Firestore
+and call Vertex AI:
+
+```bash
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:$BE_RUNTIME_SA" --role="roles/datastore.user"
+
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:$BE_RUNTIME_SA" --role="roles/aiplatform.user"
+```
+
+### 11.4 Anthropic API key in Secret Manager
+
+The key is injected into Cloud Run as the `ANTHROPIC_API_KEY` env var by the
+deploy pipeline (`--set-secrets`). It is deliberately *not* an `APP_`-prefixed
+setting so it never appears in config dumps or logs.
+
+```bash
+printf '%s' "your-anthropic-api-key" | gcloud secrets create anthropic-api-key --data-file=-
+
+gcloud secrets add-iam-policy-binding anthropic-api-key \
+  --member="serviceAccount:$BE_RUNTIME_SA" --role="roles/secretmanager.secretAccessor"
+```
+
+### 11.5 Ingest the example corpus
+
+Embeds the labeled corpus and upserts it into the `emotion_examples`
+collection (~4.2k docs, one-time cost ≈ $0.02, idempotent — safe to re-run):
+
+```bash
+gcloud auth application-default login
+uv run python scripts/ingest_corpus.py "$PROJECT_ID"        # add --dry-run to preview
+```
+
+Corpus: [Johnson8187/Chinese_Multi-Emotion_Dialogue_Dataset](https://huggingface.co/datasets/Johnson8187/Chinese_Multi-Emotion_Dialogue_Dataset)
+(MIT license, same author as the classifier model). It uses exactly the
+model's 8-label taxonomy — every label, including `關切語調` (concerned), has
+several hundred example sentences. Rows with any other label would be skipped
+defensively and reported by the script.
+
+### 11.6 Gateway config update
+
+`gateway/openapi.yaml` already declares `/v1/emotion/explain` with its own
+quota (20 req/min — each call costs real money, so the cap bounds worst-case
+spend at roughly $3/day). Gateway configs are immutable, so publish a new one:
+
+```bash
+sed "s|CLOUD_RUN_URL|$RUN_URL|g" gateway/openapi.yaml > /tmp/openapi-resolved.yaml
+
+gcloud api-gateway api-configs create emotion-config-v2 \
+  --api=emotion-api \
+  --openapi-spec=/tmp/openapi-resolved.yaml \
+  --backend-auth-service-account="$GATEWAY_SA"
+
+gcloud api-gateway gateways update emotion-gateway \
+  --api=emotion-api \
+  --api-config=emotion-config-v2 \
+  --location="$GW_REGION"
+```
+
+### 11.7 Privacy note
+
+Request bodies are still never written to logs. But with the explain feature
+enabled, the input text **does leave the service** at request time: it is sent
+to Vertex AI (to compute the query embedding) and to the Anthropic API (to
+generate the explanation). Document this in any user-facing privacy statement.
+
+### 11.8 Test it
+
+```bash
+curl -s "https://$GATEWAY_HOST/v1/emotion/explain" \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{"text": "你怎麼可以這樣對我！"}' | jq .
+```
+
+Expect an `angry` prediction, a `similar_examples` list with similarity
+scores, and a 2–4 sentence Traditional Chinese `explanation`. If `warnings`
+contains `RETRIEVAL_UNAVAILABLE` or `EXPLANATION_UNAVAILABLE`, the
+corresponding backend (Firestore/Vertex or Anthropic) failed — the
+classification itself still succeeds.
+
 ## Troubleshooting
 
 - **`gcloud auth print-identity-token` fails in CI with "No identity token can

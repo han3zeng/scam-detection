@@ -38,6 +38,13 @@ x-google-management:
       displayName: Emotion prediction requests
       valueType: INT64
       metricKind: DELTA
+    # Separate, much lower quota for /v1/emotion/explain: every call spends
+    # real money (Vertex embedding + Claude), so 20/min caps the worst case
+    # at roughly $3/day.
+    - name: emotion-explain-requests
+      displayName: Emotion explanation requests
+      valueType: INT64
+      metricKind: DELTA
   quota:
     limits:
       - name: emotion-requests-per-minute
@@ -45,6 +52,11 @@ x-google-management:
         unit: "1/min/{project}"
         values:
           STANDARD: 60
+      - name: emotion-explain-requests-per-minute
+        metric: emotion-explain-requests
+        unit: "1/min/{project}"
+        values:
+          STANDARD: 20
 
 paths:
   /health:
@@ -86,6 +98,43 @@ paths:
     # x-api-key on OPTIONS); FastAPI's CORSMiddleware answers it.
     options:
       operationId: corsEmotion
+      security: []
+      responses:
+        "200":
+          description: CORS preflight
+  /v1/emotion/explain:
+    post:
+      operationId: explainEmotion
+      security:
+        - api_key: []
+      x-google-quota:
+        metricCosts:
+          emotion-explain-requests: 1
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema:
+            type: object
+            required: [text]
+            properties:
+              text:
+                type: string
+              top_k:
+                type: integer
+              examples_k:
+                type: integer
+      responses:
+        "200":
+          description: Emotion prediction with similar examples and explanation
+        "422":
+          description: Validation error
+        "429":
+          description: Rate limited
+        "503":
+          description: Explanation feature disabled or model not ready
+    options:
+      operationId: corsExplainEmotion
       security: []
       responses:
         "200":

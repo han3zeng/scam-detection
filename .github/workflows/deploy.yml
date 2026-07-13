@@ -80,6 +80,8 @@ jobs:
             --max-instances 3 \
             --timeout 60 \
             --port 8080 \
+            --set-env-vars "APP_EXPLAIN_ENABLED=true,APP_GCP_PROJECT=$PROJECT_ID,APP_VERTEX_LOCATION=us-central1" \
+            --set-secrets "ANTHROPIC_API_KEY=anthropic-api-key:latest" \
             --startup-probe "httpGet.path=/ready,httpGet.port=8080,initialDelaySeconds=10,periodSeconds=10,failureThreshold=18,timeoutSeconds=5" \
             --no-traffic \
             --tag candidate
@@ -120,6 +122,10 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"text": "你最近過得好嗎？"}' \
             | jq -e '.prediction.label' > /dev/null
+
+          # /v1/emotion/explain is deliberately NOT smoke tested: it calls
+          # Vertex AI + Anthropic, so testing it would cost money on every
+          # deploy and let external-service flakiness block traffic shifts.
 
       # Traffic only shifts if the smoke test passed. On failure the previous
       # revision keeps serving 100% — rollback is "do nothing".
