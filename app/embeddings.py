@@ -31,7 +31,11 @@ class EmbeddingClient:
         return self._client
 
     async def embed(self, text: str, task_type: str) -> list[float]:
-        """Embed one text. task_type: RETRIEVAL_QUERY (serving) or RETRIEVAL_DOCUMENT (ingest)."""
+        """
+            Embed one text. task_type: RETRIEVAL_QUERY (serving) or RETRIEVAL_DOCUMENT (ingest).
+            - stored corpus text uses RETRIEVAL_DOCUMENT;
+            - the user's search text uses RETRIEVAL_QUERY.
+        """
         from google.genai.types import EmbedContentConfig
 
         client = self._get_client()

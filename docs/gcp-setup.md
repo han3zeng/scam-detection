@@ -371,6 +371,7 @@ explanation). Everything below is one-time setup; the feature is toggled with
 `APP_EXPLAIN_ENABLED` (the deploy pipeline sets it).
 
 ### 11.1 Enable APIs
+- apiplatform (Vertex AI): a unified development platform used to build, train, deploy, and manage machine learning (ML) models and AI agents
 
 ```bash
 gcloud services enable \
@@ -387,7 +388,7 @@ gcloud firestore databases create --location="$REGION" --type=firestore-native
 
 # KNN vector index — required before find_nearest() queries work.
 # dimension must match APP_EMBEDDING_DIMENSIONS (768; Firestore caps vector
-# indexes at 2048 dims, which is why we don't use the model's native 3072).
+# indexes at 2048 dims, which is why we don't use the gemini-embedding-001 model's native 3072).
 gcloud firestore indexes composite create \
   --collection-group=emotion_examples \
   --query-scope=COLLECTION \
@@ -415,8 +416,10 @@ deploy pipeline (`--set-secrets`). It is deliberately *not* an `APP_`-prefixed
 setting so it never appears in config dumps or logs.
 
 ```bash
+# --data-file=- : the data is from the std input
 printf '%s' "your-anthropic-api-key" | gcloud secrets create anthropic-api-key --data-file=-
 
+# Let the BE_RUNTIME_SA service account to access the anthropic-api-key
 gcloud secrets add-iam-policy-binding anthropic-api-key \
   --member="serviceAccount:$BE_RUNTIME_SA" --role="roles/secretmanager.secretAccessor"
 ```

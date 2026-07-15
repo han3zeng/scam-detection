@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # reads it from the environment, which keeps the secret out of repr()/logs.
     explain_enabled: bool = False
     gcp_project: str = ""
+    # us-central1 is a safe bet, since the google gemini google-ai infra has been changing frequently
+    # The us-central1 is relatively stable
+    # https://docs.cloud.google.com/gemini-enterprise-agent-platform/resources/locations
+    # > Note: Support for Taiwan (asia-east1) is scheduled for deprecation on February 27, 2025.
     vertex_location: str = "us-central1"
     embedding_model: str = "gemini-embedding-001"
     # 768 fits Firestore's 2048-dim vector-index cap (the model's native 3072
