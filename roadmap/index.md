@@ -41,9 +41,11 @@ The following content specifies the specs:
 ### Endpoints
 2 basic endpoints
 ```
+GET  /docs            (interactive API docs — public through the gateway)
 GET  /health          (liveness: process is up)
-GET  /ready           (readiness: model is loaded and can serve)
+GET  /ready           (readiness: model is loaded and can serve; not exposed through the gateway)
 POST /v1/emotion
+POST /v1/emotion/explain
 ```
 - `/health` simply checks the service is running (liveness).
 - `/ready` returns 200 only once the model is loaded into memory; wire this to Cloud Run's startup probe. The model is loaded **eagerly at startup** (not lazily on first request) so cold instances never serve a slow first prediction.

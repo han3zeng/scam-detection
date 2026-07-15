@@ -41,7 +41,6 @@ EMBED_CONCURRENCY = 8
 EMBED_RETRIES = 5
 
 
-
 """
 each row unit:
 {
@@ -50,6 +49,8 @@ each row unit:
     "label_en": "joy",
 }
 """
+
+
 def load_rows() -> list[dict]:
     """Download the dataset CSV and return cleaned {text, label, label_en} rows."""
     from huggingface_hub import hf_hub_download, list_repo_files
@@ -85,6 +86,7 @@ def load_rows() -> list[dict]:
     print(f"loaded {len(rows)} rows (skipped {dropped} invalid/unknown-label rows)")
     return rows
 
+
 """
 from {
     "text": "我很開心",
@@ -98,6 +100,8 @@ to {
     "embedding": [0.12, -0.08, 0.44, ...],
 }
 """
+
+
 async def embed_rows(rows: list[dict], settings: Settings) -> None:
     """Attach an 'embedding' vector to each row, in place."""
     embedder = EmbeddingClient(settings)
