@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Ignore the “module import not at top of file” warning for this line.
 # For Ruff
-from app.config import Settings  # noqa: E402 
+from app.config import Settings  # noqa: E402
 from app.embeddings import EmbeddingClient  # noqa: E402
 from app.model import LABELS  # noqa: E402
 
@@ -129,9 +129,9 @@ async def embed_rows(rows: list[dict], settings: Settings) -> None:
 
 
 def write_rows(rows: list[dict], settings: Settings) -> None:
-    from google.cloud import firestore
     # The class is a native Firestore data type that explicitly wraps an array of floating-point numbers
     # to store vector embeddings for AI and semantic search
+    from google.cloud import firestore
     from google.cloud.firestore_v1.vector import Vector
 
     client = firestore.Client(project=settings.gcp_project, database=settings.firestore_database)
