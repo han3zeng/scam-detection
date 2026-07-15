@@ -59,10 +59,17 @@ PyTorch wheel.
 
 | Method | Path | Purpose |
 |---|---|---|
+| `GET` | `/docs` | interactive API documentation (Swagger UI) — no key needed |
 | `GET` | `/health` | liveness — process is up |
-| `GET` | `/ready` | readiness — model is loaded (Cloud Run startup probe) |
+| `GET` | `/ready` | readiness — model is loaded (Cloud Run startup probe; not exposed through the gateway) |
 | `POST` | `/v1/emotion` | classify text into 8 emotion labels |
 | `POST` | `/v1/emotion/explain` | classify + retrieve similar labeled examples + Claude-generated explanation of the tone |
+
+**For frontend developers**: open `https://<gateway-host>/docs`, click
+**Authorize**, and paste your API key — "Try it out" requests then go through
+the gateway with the `x-api-key` header attached, so the normal quotas apply.
+The docs page and `/openapi.json` are public (they're documentation); every
+`/v1/*` endpoint still requires the key.
 
 Errors follow a consistent contract:
 `{"error": {"code": "TEXT_TOO_LONG", "message": "..."}}`. The explain

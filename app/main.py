@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 
 # Default settings is in config file
 from app.config import Settings, get_settings
@@ -16,6 +17,37 @@ from app.retrieval import ExampleRetriever
 from app.schemas import EmotionRequest, EmotionResponse, ExplainRequest, ExplainResponse
 
 logger = logging.getLogger(__name__)
+
+# Shown on the interactive docs page (/docs). Written for frontend developers
+# consuming the API through the gateway.
+API_DESCRIPTION = """
+Emotion-labeling API for Traditional Chinese text.
+
+## Authentication
+
+All `/v1/*` endpoints require an API key sent as the `x-api-key` header.
+Click **Authorize** (top right), paste your key, and every "Try it out"
+request will include it. Ask the project owner for a key.
+
+## Quotas
+
+| Endpoint | Limit |
+|---|---|
+| `POST /v1/emotion` | 60 requests/min per key |
+| `POST /v1/emotion/explain` | 20 requests/min per key (each call invokes an LLM) |
+
+## Errors
+
+All errors share one contract: `{"error": {"code": "...", "message": "..."}}`.
+`/v1/emotion/explain` degrades gracefully — if similar-example retrieval or the
+LLM fails, you still get the classification plus a `warnings` array
+(`RETRIEVAL_UNAVAILABLE` / `EXPLANATION_UNAVAILABLE`) instead of a 5xx.
+
+## Privacy
+
+Request text is never logged. For `/v1/emotion/explain` it is sent to
+Vertex AI (embedding) and the Anthropic API (explanation) at request time.
+"""
 
 
 # The code before yield will be executed before application starts.
@@ -58,8 +90,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
 
-    app = FastAPI(title="emotion-detection-api", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(
+        title="emotion-detection-api",
+        version="1.0.0",
+        description=API_DESCRIPTION,
+        lifespan=lifespan,
+    )
     app.state.settings = settings
+
+    # The gateway (not this app) enforces the API key, but declaring the
+    # scheme here makes Swagger UI render an Authorize button so "Try it out"
+    # requests carry the x-api-key header through the gateway.
+    def custom_openapi() -> dict:
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        schema.setdefault("components", {})["securitySchemes"] = {
+            "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "x-api-key"}
+        }
+        schema["security"] = [{"ApiKeyAuth": []}]
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi
 
     app.add_middleware(RequestLogMiddleware)
     if settings.cors_origins:
@@ -72,12 +130,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
     register_exception_handlers(app)
 
-    @app.get("/health")
+    @app.get("/health", summary="Liveness check")
     def health() -> dict:
         """Liveness: the process is up."""
         return {"status": "ok", "version": "bootstrap"}
 
-    @app.get("/ready")
+    # include_in_schema=False: /ready is only for Cloud Run's startup probe and
+    # is not routed through the gateway — documenting it would show frontend
+    # developers a path that 404s for them.
+    @app.get("/ready", include_in_schema=False)
     def ready(request: Request) -> dict:
         """Readiness: the model is loaded and can serve. Wired to Cloud Run's startup probe."""
         if getattr(request.app.state, "classifier", None) is None:
@@ -90,7 +151,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Sync endpoint on purpose: FastAPI runs it in a threadpool, so CPU-bound
     # inference doesn't block the event loop.
-    @app.post("/v1/emotion", response_model=EmotionResponse)
+    @app.post(
+        "/v1/emotion",
+        response_model=EmotionResponse,
+        summary="Classify text into 8 emotion labels",
+        description=(
+            "Classifies Traditional Chinese text (max 512 characters) into 8 emotion "
+            "labels and returns the `top_k` highest-scoring labels. `prediction` "
+            "duplicates `top_k[0]` as a convenience field."
+        ),
+    )
     def emotion(payload: EmotionRequest, request: Request) -> dict:
         classifier = getattr(request.app.state, "classifier", None)
         if classifier is None:
@@ -107,7 +177,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Async on purpose: retrieval and explanation are awaited I/O. The
     # CPU-bound classifier call goes through run_in_threadpool so it doesn't
     # block the event loop.
-    @app.post("/v1/emotion/explain", response_model=ExplainResponse)
+    @app.post(
+        "/v1/emotion/explain",
+        response_model=ExplainResponse,
+        summary="Classify + explain why the text carries that tone",
+        description=(
+            "Runs the classifier, retrieves the `examples_k` most similar labeled "
+            "sentences (Firestore vector search), and has Claude generate a short "
+            "Traditional Chinese explanation grounded in those examples. Slower "
+            "(~2–4s) and rate-limited lower than `/v1/emotion`. If retrieval or the "
+            "LLM fails, the classification is still returned with a `warnings` array."
+        ),
+    )
     async def explain(payload: ExplainRequest, request: Request) -> dict:
         state = request.app.state
         classifier = getattr(state, "classifier", None)

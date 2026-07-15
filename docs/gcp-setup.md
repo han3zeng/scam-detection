@@ -483,6 +483,48 @@ contains `RETRIEVAL_UNAVAILABLE` or `EXPLANATION_UNAVAILABLE`, the
 corresponding backend (Firestore/Vertex or Anthropic) failed — the
 classification itself still succeeds.
 
+## 12. Interactive API docs for frontend developers
+
+`gateway/openapi.yaml` routes `GET /docs` (Swagger UI served by FastAPI) and
+`GET /openapi.json` through the gateway **without** an API key — they are
+documentation, not data. The security model is unchanged:
+
+- every `/v1/*` endpoint still requires `x-api-key` and its quota;
+- Cloud Run still rejects direct (non-gateway) calls;
+- in the docs UI, developers click **Authorize** and paste their API key, so
+  "Try it out" requests carry `x-api-key` through this same gateway;
+- `/ready` is hidden from the schema (probe-only, not routed here).
+
+Publishing the change is the usual immutable-config dance (bump the version
+number from whatever is currently live):
+
+```bash
+sed "s|CLOUD_RUN_URL|$RUN_URL|g" gateway/openapi.yaml > /tmp/openapi-resolved.yaml
+
+gcloud api-gateway api-configs create emotion-config-v3 \
+  --api=emotion-api \
+  --openapi-spec=/tmp/openapi-resolved.yaml \
+  --backend-auth-service-account="$GATEWAY_SA"
+
+gcloud api-gateway gateways update emotion-gateway \
+  --api=emotion-api \
+  --api-config=emotion-config-v3 \
+  --location="$GW_REGION"
+```
+
+Then share `https://$GATEWAY_HOST/docs` plus an API key with the frontend
+developer:
+
+```bash
+# docs page loads without a key
+curl -s -o /dev/null -w '%{http_code}\n' "https://$GATEWAY_HOST/docs"        # 200
+curl -s "https://$GATEWAY_HOST/openapi.json" | jq '.info.title'             # "emotion-detection-api"
+
+# data endpoints still gated
+curl -s -o /dev/null -w '%{http_code}\n' "https://$GATEWAY_HOST/v1/emotion" \
+  -X POST -H "Content-Type: application/json" -d '{"text":"你好"}'          # 401/403
+```
+
 ## Troubleshooting
 
 - **`gcloud auth print-identity-token` fails in CI with "No identity token can

@@ -10,8 +10,17 @@ MAX_TEXT_CHARS = 512
 
 
 class EmotionRequest(BaseModel):
-    text: str = Field(..., max_length=MAX_TEXT_CHARS)
-    top_k: int = Field(3, ge=1, le=8)
+    # json_schema_extra examples pre-fill the "Try it out" form in /docs.
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"text": "你最近過得好嗎？", "top_k": 3}]}
+    )
+
+    text: str = Field(
+        ...,
+        max_length=MAX_TEXT_CHARS,
+        description="Traditional Chinese text to classify (1–512 characters).",
+    )
+    top_k: int = Field(3, ge=1, le=8, description="How many top-scoring labels to return.")
 
     @field_validator("text")
     @classmethod
@@ -39,10 +48,24 @@ class EmotionResponse(BaseModel):
 
 
 class ExplainRequest(BaseModel):
-    text: str = Field(..., max_length=MAX_TEXT_CHARS)
-    top_k: int = Field(3, ge=1, le=8)
-    # How many similar labeled examples to retrieve for grounding.
-    examples_k: int = Field(4, ge=1, le=8)
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [{"text": "你怎麼可以這樣對我！", "top_k": 3, "examples_k": 4}]
+        }
+    )
+
+    text: str = Field(
+        ...,
+        max_length=MAX_TEXT_CHARS,
+        description="Traditional Chinese text to classify and explain (1–512 characters).",
+    )
+    top_k: int = Field(3, ge=1, le=8, description="How many top-scoring labels to return.")
+    examples_k: int = Field(
+        4,
+        ge=1,
+        le=8,
+        description="How many similar labeled example sentences to retrieve for grounding.",
+    )
 
     @field_validator("text")
     @classmethod
@@ -65,7 +88,36 @@ class WarningDetail(BaseModel):
 
 
 class ExplainResponse(BaseModel):
-    model_config = ConfigDict(protected_namespaces=())
+    model_config = ConfigDict(
+        protected_namespaces=(),
+        json_schema_extra={
+            "examples": [
+                {
+                    "text": "你怎麼可以這樣對我！",
+                    "prediction": {"label": "憤怒語調", "label_en": "angry", "score": 0.93},
+                    "top_k": [
+                        {"label": "憤怒語調", "label_en": "angry", "score": 0.93},
+                        {"label": "悲傷語調", "label_en": "sad", "score": 0.04},
+                        {"label": "疑問語調", "label_en": "questioning", "score": 0.02},
+                    ],
+                    "similar_examples": [
+                        {
+                            "text": "你憑什麼這樣說！",
+                            "label": "憤怒語調",
+                            "label_en": "angry",
+                            "similarity": 0.87,
+                        }
+                    ],
+                    "explanation": "此句以質問句式「怎麼可以」直接指責對方，並以感嘆號收尾，"
+                    "情緒強烈，與例句 [1] 的質問語氣相似，故判定為憤怒語調。",
+                    "model": "Johnson8187/Chinese-Emotion-Small",
+                    "model_revision": "2c04ce86de44d232f0fbe31413868eb31d791aea",
+                    "explain_model": "claude-haiku-4-5",
+                    "warnings": [],
+                }
+            ]
+        },
+    )
 
     text: str
     prediction: LabelScore
